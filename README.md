@@ -1,2 +1,2 @@
 # vmrun
-Manage local VMs
+Script to manage local VMs
