@@ -1,10 +1,11 @@
 #!/usr/bin/sh
 
+set -eux
+
 IMAGE=
 ISO=
-VARS=
 SIZE=24G
-MEMORY=1024
+MEMORY=2048
 UEFI=0
 TPM=0
 
@@ -28,6 +29,14 @@ list_isos() {
 
 list_images() {
     ls -1 images
+}
+
+find_free_port() {
+    port="$1"
+    while lsof -i -P -n | grep -q ":$port"; do
+	port=$((port + 1))
+    done
+    echo "$port"
 }
 
 
@@ -84,7 +93,6 @@ while [ $# -gt 0 ]; do
 	    ;;
 	*)
 	    IMAGE="images/$1"
-	    VARS="others/$1-vars.bin"
 	    shift
 	    ;;
     esac
@@ -109,6 +117,28 @@ if [ ! -f "$IMAGE" ]; then
     qemu-img create -f qcow2 "$IMAGE" "$SIZE"
 fi
 
+if [ $TPM -eq 1 ]; then
+    UEFI=1
+    if ! type swtpm > /dev/null 2>&1; then
+	SWTPM=${SWTPM:-"./bin/swtpm"}
+	if [ ! -f "$SWTPM" ]; then
+	   echo "ERROR: swtpm not found, install it or use SWTPM var"
+	   exit 1
+	fi
+    else
+	SWTPM="swtpm"
+    fi
+
+    TPM_DIR="others/$(basename "$IMAGE")/tpm"
+    TPM_SOCK="$TPM_DIR/swtpm-sock"
+    mkdir -p "$TPM_DIR"
+    $SWTPM socket \
+	   --terminate \
+	   --tpmstate dir="$TPM_DIR" \
+	   --ctrl type=unixio,path="$TPM_SOCK" \
+	   --tpm2 &
+fi
+
 if [ $UEFI -eq 1 ]; then
     if [ ! -f "/usr/share/qemu/ovmf-x86_64-code.bin" ]; then
 	OVMF=${OVMF:-"/usr/share/qemu/ovmf-x86_64-code.bin"}
@@ -120,24 +150,12 @@ if [ $UEFI -eq 1 ]; then
 	OVMF="/usr/share/qemu/ovmf-x86_64-code.bin"
     fi
 
-    if [ ! -f "$VARS" ]; then
-	cp /usr/share/qemu/ovmf-x86_64-vars.bin "$VARS"
+    OVMF_VARS="others/$(basename "$IMAGE")/ovmf-x86_64-vars.bin"
+    if [ ! -f "$OVMF_VARS" ]; then
+	mkdir -p "others/$(basename "$IMAGE")"
+	cp /usr/share/qemu/ovmf-x86_64-vars.bin "$OVMF_VARS"
     fi
 fi
-
-if [ $TPM -eq 1 ]; then
-    if ! type swtpm > /dev/null 2>&1; then
-	SWTPM=${SWTPM:-"./swtpm"}
-	if [ ! -f "$SWTPM" ]; then
-	   echo "ERROR: swtpm not found, install it or use SWTPM var"
-	   exit 1
-	fi
-    else
-	SWTPM="swtpm"
-    fi
-fi
-
-ssh-keygen -R [localhost]:10022 -f $HOME/.ssh/known_hosts
 
 CDROM=
 if [ -n "$ISO" ]; then
@@ -147,16 +165,40 @@ fi
 DRIVES=
 if [ $UEFI -eq 1 ]; then
     DRIVES="-drive if=pflash,format=raw,unit=0,readonly=on,file=$OVMF"
-    DRIVES="$DRIVES -drive if=pflash,format=raw,unit=1,file=$VARS"
+    DRIVES="$DRIVES -drive if=pflash,format=raw,unit=1,file=$OVMF_VARS"
 fi
 
-echo "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -p 10022 root@localhost"
+CHARDEV=
+if [ $TPM -eq 1 ]; then
+    CHARDEV="-chardev socket,id=chrtpm,path=$TPM_SOCK"
+    CHARDEV="$CHARDEV -tpmdev emulator,id=tpm0,chardev=chrtpm"
+    CHARDEV="$CHARDEV -device tpm-tis,tpmdev=tpm0"
+fi
+
+PORT=$(find_free_port 10022)
+
+ssh-keygen -R "[localhost]:10022" -f "$HOME/.ssh/known_hosts"
+
+echo "echo \"PermitRootLogin yes\" > /etc/ssh/sshd_config.d/root.conf"
+echo "systemctl restart sshd.service"
+echo "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -p $PORT root@localhost"
+
+# TODO - Support local network
+# TODO - Write it in Rust before it gets too big
+# TODO - Use spice / VNC
+# Some recommendations from https://wiki.gentoo.org/wiki/QEMU/Options
 
 qemu-system-x86_64 \
-    -accel kvm \
+    -machine type=q35,accel=kvm \
+    -cpu host \
     -m "$MEMORY" \
-    -device e1000,netdev=net0 \
-    -netdev user,id=net0,hostfwd=tcp::10022-:22 \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0,hostfwd="tcp::$PORT-:22" \
+    -device virtio-net-pci,netdev=net1 \
+    -netdev socket,id=net1,mcast=230.0.0.1:1234 \
+    -object rng-random,id=rng0,filename=/dev/urandom \
+    -device virtio-rng-pci,rng=rng0 \
     $DRIVES \
+    $CHARDEV \
     $CDROM \
-    -hda "$IMAGE"
+    -drive file="$IMAGE",if=virtio
