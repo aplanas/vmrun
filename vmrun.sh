@@ -1,6 +1,6 @@
 #!/usr/bin/sh
 
-set -eux
+set -eu
 
 IMAGE=
 ISO=
@@ -8,6 +8,7 @@ SIZE=24G
 MEMORY=2048
 UEFI=0
 TPM=0
+VIDEO=0
 
 help() {
     echo "Launch or install a virtual machine"
@@ -20,6 +21,8 @@ help() {
     echo "  -m, --memory: Memory size of the VM ($MEMORY)" 1>&2
     echo "  -u, --uefi:   Enable UEFI via ovmf (OVMF)" 1>&2
     echo "  -t, --tpm:    Enable TPM2 via swtpm (SWTPM)" 1>&2
+    echo "  -v, --video:  Enable SDL video (disabled if running an image)" 1>&2
+    echo "  -d, --debug:  Trace the script execution" 1>&2
     echo "  image:        Image name to create or launch" 1>&2
 }
 
@@ -64,6 +67,7 @@ while [ $# -gt 0 ]; do
 	    ;;
 	-f|--from)
 	    ISO="isos/$2"
+	    VIDEO=1
 	    shift
 	    shift
 	    ;;
@@ -84,6 +88,14 @@ while [ $# -gt 0 ]; do
 	-t|--tpm)
 	    UEFI=1
 	    TPM=1
+	    shift
+	    ;;
+	-v|--video)
+	    VIDEO=1
+	    shift
+	    ;;
+	-d|--debug)
+	    set -x
 	    shift
 	    ;;
 	-*|--*)
@@ -175,19 +187,30 @@ if [ $TPM -eq 1 ]; then
     CHARDEV="$CHARDEV -device tpm-tis,tpmdev=tpm0"
 fi
 
+DISPLAY=
+if [ $VIDEO -eq 0 ]; then
+    DISPLAY="-display none"
+fi
+
 PORT=$(find_free_port 10022)
 
-ssh-keygen -R "[localhost]:10022" -f "$HOME/.ssh/known_hosts"
+ssh-keygen -R "[localhost]:10022" -f "$HOME/.ssh/known_hosts" > /dev/null 2>&1
 
 echo "echo \"PermitRootLogin yes\" > /etc/ssh/sshd_config.d/root.conf"
 echo "systemctl restart sshd.service"
 echo "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -p $PORT root@localhost"
 
-# TODO - Support local network
+# TODO - Multiple VMs at the same time
+# TODO - No graphic output option
+# TODO - Detect firewall that stop mcast
+# TODO - Add overlay / template images
+# TODO - How to do the initial configuration on the VM
+# TODO - Support local network (mcast, dnsmasq)
 # TODO - Write it in Rust before it gets too big
 # TODO - Use spice / VNC
 # Some recommendations from https://wiki.gentoo.org/wiki/QEMU/Options
 
+# shellcheck disable=SC2086
 qemu-system-x86_64 \
     -machine type=q35,accel=kvm \
     -cpu host \
@@ -201,4 +224,5 @@ qemu-system-x86_64 \
     $DRIVES \
     $CHARDEV \
     $CDROM \
+    $DISPLAY \
     -drive file="$IMAGE",if=virtio
