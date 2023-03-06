@@ -187,9 +187,9 @@ if [ $TPM -eq 1 ]; then
     CHARDEV="$CHARDEV -device tpm-tis,tpmdev=tpm0"
 fi
 
-DISPLAY=
+DISPLAY_=
 if [ $VIDEO -eq 0 ]; then
-    DISPLAY="-display none"
+    DISPLAY_="-display none"
 fi
 
 PORT=$(find_free_port 10022)
@@ -200,6 +200,9 @@ echo "echo \"PermitRootLogin yes\" > /etc/ssh/sshd_config.d/root.conf"
 echo "systemctl restart sshd.service"
 echo "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -p $PORT root@localhost"
 
+# TODO - Fix race condition when swtpm creates the socket
+# TODO - List all the running VMs
+# TODO - Stop / kill a VM
 # TODO - Multiple VMs at the same time
 # TODO - No graphic output option
 # TODO - Detect firewall that stop mcast
@@ -224,5 +227,5 @@ qemu-system-x86_64 \
     $DRIVES \
     $CHARDEV \
     $CDROM \
-    $DISPLAY \
+    $DISPLAY_ \
     -drive file="$IMAGE",if=virtio
